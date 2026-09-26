@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>Street Racer Multiplayer</title>
+<style>
+*{box-sizing:border-box}body{margin:0;font-family:system-ui;background:#0f172a;color:#fff}
+.wrap{max-width:520px;margin:auto;padding:16px}.card{background:#111827;border:1px solid #334155;border-radius:18px;padding:16px;margin-bottom:12px}
+h1{text-align:center;margin:4px 0 14px;font-size:28px}.row{display:flex;gap:8px}.row>*{flex:1}
+input,button{width:100%;min-height:48px;border-radius:12px;border:0;padding:10px;font-size:16px}
+input{background:#f8fafc;color:#111827}button{font-weight:800;background:#2563eb;color:white;touch-action:manipulation}
+button.secondary{background:#334155}.hidden{display:none}.center{text-align:center}.room{font-size:26px;font-weight:900;letter-spacing:4px}
+#track{position:relative;max-width:430px;margin:0 auto;height:600px;overflow:hidden;border-radius:20px;border:3px solid #475569;background:#4b5563}
+#track:before{content:"";position:absolute;inset:0 12%;background:repeating-linear-gradient(to bottom,#3f3f46 0 55px,#52525b 55px 110px);animation:road .5s linear infinite}
+#track:after{content:"";position:absolute;top:0;bottom:0;left:50%;width:5px;background:repeating-linear-gradient(to bottom,#fff 0 55px,transparent 55px 110px);transform:translateX(-50%);opacity:.8}
+@keyframes road{to{background-position-y:110px}}
+.car{position:absolute;z-index:3;width:46px;height:78px;border-radius:12px;transform:translate(-50%,-50%);box-shadow:0 4px 10px #000b;border:2px solid #fff}
+.car:before{content:"";position:absolute;left:7px;right:7px;top:8px;height:22px;border-radius:7px;background:#dbeafe}
+.label{position:absolute;top:-24px;left:50%;transform:translateX(-50%);font-size:12px;white-space:nowrap;font-weight:800;text-shadow:0 2px 3px #000}
+.controls{display:flex;gap:12px;margin-top:12px}.controls button{font-size:25px;height:58px}.nitro{background:#f97316!important}
+.small{font-size:13px;color:#cbd5e1}.players{display:flex;flex-wrap:wrap;gap:7px;margin-top:8px}.pill{padding:6px 9px;border-radius:999px;background:#1e293b;font-size:13px}
+</style>
+</head>
+<body>
+<div class="wrap">
+<h1>🏎️ STREET RACER</h1>
+
+<div id="lobby" class="card">
+  <input id="name" maxlength="16" placeholder="Your name">
+  <div class="row" style="margin-top:8px"><button id="create">CREATE ROOM</button><button id="join" class="secondary">JOIN ROOM</button></div>
+  <input id="code" maxlength="6" placeholder="Room code" style="margin-top:8px;text-transform:uppercase">
+  <p class="small">Create a room and send the 6-character code to your friends. Solo play has AI traffic.</p>
+</div>
+
+<div id="gameUI" class="hidden">
+  <div class="card center">ROOM <div class="room" id="roomCode">------</div><div class="small">Share this code with your friends</div><div class="players" id="players"></div></div>
+  <div id="track"></div>
+  <div class="controls"><button id="left">◀</button><button id="boost" class="nitro">⚡ NITRO</button><button id="right">▶</button></div>
+  <div class="row" style="margin-top:10px"><button id="reset" class="secondary">RESET RACE</button><button id="leave" class="secondary">LEAVE</button></div>
+  <p class="small center" id="status">Connected</p>
+</div>
+</div>
+<script src="/socket.io/socket.io.js"></script>
+<script>
+const socket=io();
+const lobby=document.querySelector("#lobby"),gameUI=document.querySelector("#gameUI");
+const nameEl=document.querySelector("#name"),codeEl=document.querySelector("#code");
+const track=document.querySelector("#track"),roomCode=document.querySelector("#roomCode");
+const playersEl=document.querySelector("#players"),statusEl=document.querySelector("#status");
+let me=null, boosting=false, holdDir=0, aiCars=[], aiTimer=0, localScore=0;
+
+function enter(){lobby.classList.add("hidden");gameUI.classList.remove("hidden");}
+function join(action){
+ const name=(nameEl.value.trim()||"Player");
+ if(action==="create") socket.emit("createRoom",{name});
+ else socket.emit("joinRoom",{name,code:codeEl.value.trim().toUpperCase()});
+}
+document.querySelector("#create").onclick=()=>join("create");
+document.querySelector("#join").onclick=()=>join("join");
+document.querySelector("#reset").onclick=()=>{socket.emit("resetRace");resetAI();};
+document.querySelector("#leave").onclick=()=>location.reload();
+
+socket.on("joined",d=>{me=d.id;roomCode.textContent=d.code;enter();resetAI();});
+socket.on("errorMsg",m=>alert(m));
+socket.on("connect",()=>statusEl.textContent="Online");
+
+function render(s){
+ track.querySelectorAll(".car").forEach(x=>x.remove());
+ playersEl.innerHTML="";
+ s.players.forEach(p=>{
+   const car=document.createElement("div"); car.className="car";
+   car.style.background=p.color; car.style.left=p.x+"%"; car.style.top=p.y+"%";
+   const label=document.createElement("div");label.className="label";label.textContent=p.name+(p.id===me?" (YOU)":"");
+   car.appendChild(label);track.appendChild(car);
+   const pill=document.createElement("div");pill.className="pill";pill.textContent="🏎️ "+p.name+" • "+p.score;
+   playersEl.appendChild(pill);
+ });
+ const aiPill=document.createElement("div");aiPill.className="pill";aiPill.textContent="🤖 AI traffic: "+aiCars.length;playersEl.appendChild(aiPill);
+ statusEl.textContent=s.players.length<2?"Solo mode — AI traffic active":s.players.length+" racers online + AI traffic";
+}
+
+socket.on("state",render);
+
+function input(){
+ if(!me)return;
+ socket.emit("input",{dx:holdDir,boost:boosting});
+}
+setInterval(input,50);
+
+function startHold(d){holdDir=d}
+function endHold(){holdDir=0}
+for(const [id,d] of [["left",-1],["right",1]]){
+ const b=document.querySelector("#"+id);
+ b.addEventListener("pointerdown",()=>startHold(d));
+ ["pointerup","pointercancel","pointerleave"].forEach(e=>b.addEventListener(e,endHold));
+}
+const bb=document.querySelector("#boost");
+bb.addEventListener("pointerdown",()=>boosting=true);
+["pointerup","pointercancel","pointerleave"].forEach(e=>bb.addEventListener(e,()=>boosting=false));
+window.addEventListener("keydown",e=>{if(e.key==="ArrowLeft")holdDir=-1;if(e.key==="ArrowRight")holdDir=1;if(e.code==="Space")boosting=true});
+window.addEventListener("keyup",e=>{if(e.key==="ArrowLeft"||e.key==="ArrowRight")holdDir=0;if(e.code==="Space")boosting=false});
+
+function resetAI(){
+ aiCars.forEach(a=>a.el.remove());
+ aiCars=[];
+ aiTimer=0;
+ localScore=0;
+}
+function spawnAI(){
+ const el=document.createElement("div");
+ el.className="car";
+ const colors=["#ef4444","#22c55e","#f59e0b","#a855f7","#ec4899"];
+ el.style.background=colors[Math.floor(Math.random()*colors.length)];
+ const lane=[22,50,78][Math.floor(Math.random()*3)];
+ el.style.left=lane+"%";
+ el.style.top="-55px";
+ const label=document.createElement("div");
+ label.className="label";
+ label.textContent="🤖 AI";
+ el.appendChild(label);
+ track.appendChild(el);
+ aiCars.push({el,y:-55,x:lane,speed:2.1+Math.random()*1.6});
+}
+function rectsOverlap(a,b){
+ const A=a.getBoundingClientRect(),B=b.getBoundingClientRect();
+ return !(A.right<B.left+8||A.left>B.right-8||A.bottom<B.top+8||A.top>B.bottom-8);
+}
+let lastAI=performance.now();
+function aiLoop(now){
+ const dt=Math.min(40,now-lastAI); lastAI=now;
+ if(!gameUI.classList.contains("hidden")){
+   aiTimer+=dt;
+   const interval=Math.max(500,1150-Math.min(localScore,50)*10);
+   if(aiTimer>interval){aiTimer=0;spawnAI();}
+   const playerCar=track.querySelector(".car:not(:has(.label))");
+   // The player's own car has no child label; remote players do.
+   for(let i=aiCars.length-1;i>=0;i--){
+     const a=aiCars[i];
+     a.y += a.speed*dt;
+     a.el.style.top=a.y+"px";
+     if(playerCar && rectsOverlap(playerCar,a.el)){
+       statusEl.textContent="💥 AI crash! Keep dodging!";
+       a.el.remove(); aiCars.splice(i,1);
+       continue;
+     }
+     if(a.y>track.clientHeight+80){
+       a.el.remove();aiCars.splice(i,1);
+       localScore++;
+       statusEl.textContent="🏁 AI dodged! Solo score: "+localScore;
+     }
+   }
+ }
+ requestAnimationFrame(aiLoop);
+}
+requestAnimationFrame(aiLoop);
+</script>
+</body>
+</html>
